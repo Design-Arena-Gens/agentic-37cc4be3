@@ -1,0 +1,255 @@
+//@version=5
+indicator("Advanced Trading Signals with CPR & ATR", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ==================== INPUTS ====================
+
+// Signal Settings
+signalSensitivity = input.int(14, "Signal Sensitivity (RSI Period)", minval=5, maxval=50, group="Signal Settings")
+maLength = input.int(20, "MA Length", minval=5, maxval=200, group="Signal Settings")
+useEMA = input.bool(true, "Use EMA (vs SMA)", group="Signal Settings")
+
+// ATR Volatility Filter
+useATRFilter = input.bool(true, "Enable ATR Volatility Filter", group="ATR Filter")
+atrPeriod = input.int(14, "ATR Period", minval=5, maxval=50, group="ATR Filter")
+atrMultiplier = input.float(1.5, "ATR Multiplier", minval=0.5, maxval=5.0, step=0.1, group="ATR Filter")
+minVolatility = input.float(0.5, "Minimum Volatility %", minval=0.1, maxval=10.0, step=0.1, group="ATR Filter")
+
+// CPR Settings
+showCPR = input.bool(true, "Show CPR Levels", group="CPR Settings")
+cprLineWidth = input.int(2, "CPR Line Width", minval=1, maxval=4, group="CPR Settings")
+tcColor = input.color(color.new(color.red, 50), "Top Central Pivot Color", group="CPR Settings")
+pivotColor = input.color(color.new(color.yellow, 50), "Pivot Color", group="CPR Settings")
+bcColor = input.color(color.new(color.green, 50), "Bottom Central Pivot Color", group="CPR Settings")
+
+// Risk Management
+riskRewardRatio = input.float(2.0, "Risk:Reward Ratio for Target 1", minval=0.5, maxval=10.0, step=0.5, group="Risk Management")
+target2Multiplier = input.float(3.0, "Target 2 Multiplier", minval=1.0, maxval=15.0, step=0.5, group="Risk Management")
+target3Multiplier = input.float(4.5, "Target 3 Multiplier", minval=1.5, maxval=20.0, step=0.5, group="Risk Management")
+stopLossATRMult = input.float(2.0, "Stop Loss ATR Multiplier", minval=0.5, maxval=5.0, step=0.1, group="Risk Management")
+
+// Multi-Timeframe Settings
+showMTFDashboard = input.bool(true, "Show Multi-Timeframe Dashboard", group="Multi-Timeframe")
+mtf1 = input.timeframe("5", "Timeframe 1", group="Multi-Timeframe")
+mtf2 = input.timeframe("15", "Timeframe 2", group="Multi-Timeframe")
+mtf3 = input.timeframe("60", "Timeframe 3", group="Multi-Timeframe")
+mtf4 = input.timeframe("240", "Timeframe 4", group="Multi-Timeframe")
+
+// Alert Settings
+enableAlerts = input.bool(true, "Enable Buy/Sell Alerts", group="Alerts")
+
+// ==================== CALCULATIONS ====================
+
+// Moving Average
+ma = useEMA ? ta.ema(close, maLength) : ta.sma(close, maLength)
+
+// RSI
+rsi = ta.rsi(close, signalSensitivity)
+
+// ATR Calculation
+atr = ta.atr(atrPeriod)
+atrPercent = (atr / close) * 100
+volatilityHigh = atrPercent > minVolatility
+atrFilterPass = not useATRFilter or volatilityHigh
+
+// MACD
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
+
+// Trend Detection
+bullishTrend = close > ma and ta.ema(close, 50) > ta.ema(close, 200)
+bearishTrend = close < ma and ta.ema(close, 50) < ta.ema(close, 200)
+sidewaysTrend = not bullishTrend and not bearishTrend
+
+// Volume Analysis
+avgVolume = ta.sma(volume, 20)
+volumeSpike = volume > avgVolume * 1.5
+
+// ==================== CPR CALCULATIONS ====================
+
+// Get previous day's high, low, close for CPR
+prevDayHigh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+prevDayLow = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+prevDayClose = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+// CPR Levels
+pivot = (prevDayHigh + prevDayLow + prevDayClose) / 3
+bc = (prevDayHigh + prevDayLow) / 2
+tc = (pivot - bc) + pivot
+
+// CPR Width
+cprWidth = tc - bc
+cprWidthPercent = (cprWidth / pivot) * 100
+
+// ==================== SIGNAL GENERATION ====================
+
+// Buy Signal Conditions
+buyCondition1 = ta.crossover(close, ma)
+buyCondition2 = rsi < 70 and rsi > 30
+buyCondition3 = macdLine > signalLine or ta.crossover(macdLine, signalLine)
+buyCondition4 = close > bc or close > pivot
+buySignal = buyCondition1 and buyCondition2 and buyCondition3 and atrFilterPass
+
+// Sell Signal Conditions
+sellCondition1 = ta.crossunder(close, ma)
+sellCondition2 = rsi > 30 and rsi < 70
+sellCondition3 = macdLine < signalLine or ta.crossunder(macdLine, signalLine)
+sellCondition4 = close < tc or close < pivot
+sellSignal = sellCondition1 and sellCondition2 and sellCondition3 and atrFilterPass
+
+// ==================== ENTRY, STOP LOSS & TARGETS ====================
+
+var float entryPrice = na
+var float stopLoss = na
+var float target1 = na
+var float target2 = na
+var float target3 = na
+var string tradeDirection = na
+
+if buySignal and barstate.isconfirmed
+    entryPrice := close
+    stopLoss := entryPrice - (atr * stopLossATRMult)
+    riskAmount = entryPrice - stopLoss
+    target1 := entryPrice + (riskAmount * riskRewardRatio)
+    target2 := entryPrice + (riskAmount * target2Multiplier)
+    target3 := entryPrice + (riskAmount * target3Multiplier)
+    tradeDirection := "BUY"
+
+if sellSignal and barstate.isconfirmed
+    entryPrice := close
+    stopLoss := entryPrice + (atr * stopLossATRMult)
+    riskAmount = stopLoss - entryPrice
+    target1 := entryPrice - (riskAmount * riskRewardRatio)
+    target2 := entryPrice - (riskAmount * target2Multiplier)
+    target3 := entryPrice - (riskAmount * target3Multiplier)
+    tradeDirection := "SELL"
+
+// Reset on stop loss or target hit
+if tradeDirection == "BUY" and (close <= stopLoss or close >= target3)
+    entryPrice := na
+    tradeDirection := na
+
+if tradeDirection == "SELL" and (close >= stopLoss or close <= target3)
+    entryPrice := na
+    tradeDirection := na
+
+// ==================== MULTI-TIMEFRAME ANALYSIS ====================
+
+getTrendSignal(tf) =>
+    request.security(syminfo.tickerid, tf, close > ma ? 1 : close < ma ? -1 : 0, lookahead=barmerge.lookahead_off)
+
+mtfSignal1 = getTrendSignal(mtf1)
+mtfSignal2 = getTrendSignal(mtf2)
+mtfSignal3 = getTrendSignal(mtf3)
+mtfSignal4 = getTrendSignal(mtf4)
+
+// ==================== PLOTTING ====================
+
+// Plot Moving Average
+plot(ma, "Moving Average", color=color.new(color.blue, 0), linewidth=2)
+
+// Plot CPR Levels
+plot(showCPR ? tc : na, "Top Central Pivot", color=tcColor, linewidth=cprLineWidth, style=plot.style_line)
+plot(showCPR ? pivot : na, "Pivot", color=pivotColor, linewidth=cprLineWidth, style=plot.style_line)
+plot(showCPR ? bc : na, "Bottom Central Pivot", color=bcColor, linewidth=cprLineWidth, style=plot.style_line)
+
+// Fill CPR Zone
+fill(plot(showCPR ? tc : na), plot(showCPR ? bc : na), color=color.new(color.gray, 90))
+
+// Plot Signals
+plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.normal, text="BUY")
+plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.normal, text="SELL")
+
+// Plot Entry, Stop Loss & Targets
+plot(not na(entryPrice) and tradeDirection == "BUY" ? entryPrice : na, "Entry Price", color.new(color.white, 0), linewidth=2, style=plot.style_cross)
+plot(not na(stopLoss) and tradeDirection == "BUY" ? stopLoss : na, "Stop Loss", color.new(color.red, 0), linewidth=2, style=plot.style_cross)
+plot(not na(target1) and tradeDirection == "BUY" ? target1 : na, "Target 1", color.new(color.green, 30), linewidth=1, style=plot.style_cross)
+plot(not na(target2) and tradeDirection == "BUY" ? target2 : na, "Target 2", color.new(color.green, 50), linewidth=1, style=plot.style_cross)
+plot(not na(target3) and tradeDirection == "BUY" ? target3 : na, "Target 3", color.new(color.green, 70), linewidth=1, style=plot.style_cross)
+
+plot(not na(entryPrice) and tradeDirection == "SELL" ? entryPrice : na, "Entry Price", color.new(color.white, 0), linewidth=2, style=plot.style_cross)
+plot(not na(stopLoss) and tradeDirection == "SELL" ? stopLoss : na, "Stop Loss", color.new(color.red, 0), linewidth=2, style=plot.style_cross)
+plot(not na(target1) and tradeDirection == "SELL" ? target1 : na, "Target 1", color.new(color.green, 30), linewidth=1, style=plot.style_cross)
+plot(not na(target2) and tradeDirection == "SELL" ? target2 : na, "Target 2", color.new(color.green, 50), linewidth=1, style=plot.style_cross)
+plot(not na(target3) and tradeDirection == "SELL" ? target3 : na, "Target 3", color.new(color.green, 70), linewidth=1, style=plot.style_cross)
+
+// Background Color for Market State
+bgcolor(bullishTrend ? color.new(color.green, 95) : bearishTrend ? color.new(color.red, 95) : color.new(color.gray, 95), title="Market Trend Background")
+
+// ==================== DASHBOARD ====================
+
+if showMTFDashboard and barstate.islast
+    var table dashboard = table.new(position.top_right, 5, 8, border_width=2, border_color=color.gray, frame_width=1, frame_color=color.gray)
+
+    // Header
+    table.cell(dashboard, 0, 0, "Timeframe", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 0, "Signal", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 2, 0, "Indicator", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 3, 0, "Value", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+
+    // Multi-Timeframe Signals
+    table.cell(dashboard, 0, 1, mtf1, bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 1, mtfSignal1 > 0 ? "🟢 BULL" : mtfSignal1 < 0 ? "🔴 BEAR" : "⚪ SIDE",
+               bgcolor=mtfSignal1 > 0 ? color.new(color.green, 80) : mtfSignal1 < 0 ? color.new(color.red, 80) : color.new(color.gray, 80),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(dashboard, 0, 2, mtf2, bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 2, mtfSignal2 > 0 ? "🟢 BULL" : mtfSignal2 < 0 ? "🔴 BEAR" : "⚪ SIDE",
+               bgcolor=mtfSignal2 > 0 ? color.new(color.green, 80) : mtfSignal2 < 0 ? color.new(color.red, 80) : color.new(color.gray, 80),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(dashboard, 0, 3, mtf3, bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 3, mtfSignal3 > 0 ? "🟢 BULL" : mtfSignal3 < 0 ? "🔴 BEAR" : "⚪ SIDE",
+               bgcolor=mtfSignal3 > 0 ? color.new(color.green, 80) : mtfSignal3 < 0 ? color.new(color.red, 80) : color.new(color.gray, 80),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(dashboard, 0, 4, mtf4, bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 4, mtfSignal4 > 0 ? "🟢 BULL" : mtfSignal4 < 0 ? "🔴 BEAR" : "⚪ SIDE",
+               bgcolor=mtfSignal4 > 0 ? color.new(color.green, 80) : mtfSignal4 < 0 ? color.new(color.red, 80) : color.new(color.gray, 80),
+               text_color=color.white, text_size=size.small)
+
+    // Current Indicators
+    table.cell(dashboard, 2, 1, "RSI", bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 3, 1, str.tostring(math.round(rsi, 2)),
+               bgcolor=rsi > 70 ? color.new(color.red, 80) : rsi < 30 ? color.new(color.green, 80) : color.new(color.gray, 80),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(dashboard, 2, 2, "ATR %", bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 3, 2, str.tostring(math.round(atrPercent, 2)) + "%",
+               bgcolor=volatilityHigh ? color.new(color.green, 80) : color.new(color.red, 80),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(dashboard, 2, 3, "Trend", bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 3, 3, bullishTrend ? "BULLISH" : bearishTrend ? "BEARISH" : "SIDEWAYS",
+               bgcolor=bullishTrend ? color.new(color.green, 80) : bearishTrend ? color.new(color.red, 80) : color.new(color.orange, 80),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(dashboard, 2, 4, "CPR Width", bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 3, 4, str.tostring(math.round(cprWidthPercent, 3)) + "%",
+               bgcolor=color.new(color.blue, 80), text_color=color.white, text_size=size.small)
+
+    // Trade Info
+    if not na(entryPrice)
+        table.cell(dashboard, 0, 5, "Trade Active", bgcolor=color.new(color.purple, 70), text_color=color.white, text_size=size.small)
+        table.cell(dashboard, 1, 5, tradeDirection, bgcolor=tradeDirection == "BUY" ? color.new(color.green, 70) : color.new(color.red, 70),
+                   text_color=color.white, text_size=size.small)
+
+        table.cell(dashboard, 0, 6, "Entry", bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+        table.cell(dashboard, 1, 6, str.tostring(math.round(entryPrice, 2)), bgcolor=color.new(color.blue, 80), text_color=color.white, text_size=size.small)
+
+        table.cell(dashboard, 2, 6, "Stop Loss", bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
+        table.cell(dashboard, 3, 6, str.tostring(math.round(stopLoss, 2)), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
+
+        table.cell(dashboard, 0, 7, "T1: " + str.tostring(math.round(target1, 2)), bgcolor=color.new(color.green, 90), text_color=color.white, text_size=size.small)
+        table.cell(dashboard, 1, 7, "T2: " + str.tostring(math.round(target2, 2)), bgcolor=color.new(color.green, 80), text_color=color.white, text_size=size.small)
+        table.cell(dashboard, 2, 7, "T3: " + str.tostring(math.round(target3, 2)), bgcolor=color.new(color.green, 70), text_color=color.white, text_size=size.small)
+
+// ==================== ALERTS ====================
+
+if enableAlerts
+    alertcondition(buySignal, "Buy Signal Alert", "🟢 BUY SIGNAL: Entry at {{close}}, Stop Loss at {{plot_0}}, Targets: T1={{plot_1}}, T2={{plot_2}}, T3={{plot_3}}")
+    alertcondition(sellSignal, "Sell Signal Alert", "🔴 SELL SIGNAL: Entry at {{close}}, Stop Loss at {{plot_0}}, Targets: T1={{plot_1}}, T2={{plot_2}}, T3={{plot_3}}")
+
+    if buySignal
+        alert("🟢 BUY SIGNAL\nEntry: " + str.tostring(close) + "\nStop Loss: " + str.tostring(stopLoss) + "\nTarget 1: " + str.tostring(target1) + "\nTarget 2: " + str.tostring(target2) + "\nTarget 3: " + str.tostring(target3), alert.freq_once_per_bar)
+
+    if sellSignal
+        alert("🔴 SELL SIGNAL\nEntry: " + str.tostring(close) + "\nStop Loss: " + str.tostring(stopLoss) + "\nTarget 1: " + str.tostring(target1) + "\nTarget 2: " + str.tostring(target2) + "\nTarget 3: " + str.tostring(target3), alert.freq_once_per_bar)
